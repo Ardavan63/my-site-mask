@@ -6,6 +6,7 @@ from pyrogram.errors import FloodWait
 from shazamio import Shazam
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
+from ytmusicapi import YTMusic
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -21,7 +22,35 @@ app = Client(
 )
 
 shazam = Shazam()
+ytmusic = YTMusic()
 pending_tasks = {}
+
+def extract_heuristic_query(message: Message) -> str:
+    query = ""
+    if message.audio:
+        title = message.audio.title or ""
+        artist = message.audio.performer or ""
+        query = f"{artist} {title}".strip()
+        
+    if not query and message.document and message.document.file_name:
+        base_name = os.path.splitext(message.document.file_name)[0]
+        query = base_name.replace('-', ' ').replace('_', ' ')
+        
+    return query.strip()
+
+def fetch_ytmusic_metadata(query: str):
+    results = ytmusic.search(query=query, filter="songs", limit=1)
+    if not results:
+        return None
+    
+    track = results[0]
+    title = track.get('title', 'Unknown')
+    artists_list = track.get('artists', [])
+    artist = artists_list[0].get('name', 'Unknown') if artists_list else 'Unknown'
+    album_dict = track.get('album')
+    album = album_dict.get('name', '') if album_dict else ''
+    
+    return {"title": title, "artist": artist, "album": album}
 
 @app.on_message((filters.audio | filters.document) & filters.private)
 async def process_audio(client: Client, message: Message):
@@ -31,32 +60,50 @@ async def process_audio(client: Client, message: Message):
     status_msg = await message.reply_text("[~] Downloading audio stream...")
     file_path = await message.download()
 
-    await status_msg.edit_text("[*] Computing acoustic fingerprint...")
+    await status_msg.edit_text("[*] Computing acoustic fingerprint (Shazam Engine)...")
     
     try:
         out = await shazam.recognize(file_path)
-        
-        if not out or 'track' not in out:
+        title = "Unknown"
+        artist = "Unknown"
+        album = ""
+        engine_used = "Shazam"
+        metadata_found = False
+
+        if out and 'track' in out:
+            metadata_found = True
+            track_data = out['track']
+            title = track_data.get('title', 'Unknown')
+            artist = track_data.get('subtitle', 'Unknown')
+            for section in track_data.get('sections', []):
+                if section.get('type') == 'SONG':
+                    for meta in section.get('metadata', []):
+                        if meta.get('title') == 'Album':
+                            album = meta.get('text')
+        else:
+            await status_msg.edit_text("[-] Shazam DB Miss. Engaging YouTube Music Engine...")
+            await asyncio.sleep(1) 
+            
+            search_query = extract_heuristic_query(message)
+            if search_query:
+                yt_data = await asyncio.to_thread(fetch_ytmusic_metadata, search_query)
+                if yt_data:
+                    metadata_found = True
+                    engine_used = "YouTube Music"
+                    title = yt_data['title']
+                    artist = yt_data['artist']
+                    album = yt_data['album']
+
+        if not metadata_found:
             pending_tasks[message.from_user.id] = file_path
             await status_msg.delete()
             await message.reply_text(
-                "[-] Shazam DB Miss. Track unrecognized.\n\n[?] Please reply to this message with the exact metadata in this format:\n`Artist - Title`",
+                "[-] All engines failed. Track unrecognized.\n\n[?] Please reply to this message with the exact metadata in this format:\n`Artist - Title`",
                 reply_markup=ForceReply(selective=True)
             )
             return
 
-        track_data = out['track']
-        title = track_data.get('title', 'Unknown')
-        artist = track_data.get('subtitle', 'Unknown')
-        
-        album = ""
-        for section in track_data.get('sections', []):
-            if section.get('type') == 'SONG':
-                for meta in section.get('metadata', []):
-                    if meta.get('title') == 'Album':
-                        album = meta.get('text')
-
-        await status_msg.edit_text(f"[+] Injecting metadata binary:\nArtist: {artist}\nTitle: {title}")
+        await status_msg.edit_text(f"[+] Injecting metadata binary ({engine_used}):\nArtist: {artist}\nTitle: {title}")
 
         try:
             audio = EasyID3(file_path)
@@ -83,7 +130,7 @@ async def process_audio(client: Client, message: Message):
             audio=new_file_path,
             title=title,
             performer=artist,
-            caption=f"**Title:** {title}\n**Artist:** {artist}\n**Album:** {album if album else 'Unknown'}"
+            caption=f"**Title:** {title}\n**Artist:** {artist}\n**Album:** {album if album else 'Unknown'}\n**Engine:** {engine_used}"
         )
         await status_msg.delete()
 
@@ -137,7 +184,7 @@ async def manual_metadata_injection(client: Client, message: Message):
             audio=new_file_path,
             title=title,
             performer=artist,
-            caption=f"**Title:** {title}\n**Artist:** {artist}\n(Manual Override)"
+            caption=f"**Title:** {title}\n**Artist:** {artist}\n**Engine:** Manual Override"
         )
         
     except FloodWait as e:
