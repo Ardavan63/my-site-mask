@@ -1,13 +1,12 @@
 import os
 import asyncio
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, ForceReply
 from pyrogram.errors import FloodWait
 from shazamio import Shazam
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
 
-# واکشی توکن از Environment Variables جهت امنیت (Security Protocol)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if not BOT_TOKEN:
@@ -22,8 +21,9 @@ app = Client(
 )
 
 shazam = Shazam()
+pending_tasks = {}
 
-@app.on_message(filters.audio | filters.document)
+@app.on_message((filters.audio | filters.document) & filters.private)
 async def process_audio(client: Client, message: Message):
     if not message.audio and not (message.document and message.document.file_name.endswith(".mp3")):
         return
@@ -35,9 +35,14 @@ async def process_audio(client: Client, message: Message):
     
     try:
         out = await shazam.recognize(file_path)
+        
         if not out or 'track' not in out:
-            await status_msg.edit_text("[-] Error: Acoustic signature unrecognized.")
-            os.remove(file_path)
+            pending_tasks[message.from_user.id] = file_path
+            await status_msg.delete()
+            await message.reply_text(
+                "[-] Shazam DB Miss. Track unrecognized.\n\n[?] Please reply to this message with the exact metadata in this format:\n`Artist - Title`",
+                reply_markup=ForceReply(selective=True)
+            )
             return
 
         track_data = out['track']
@@ -51,7 +56,7 @@ async def process_audio(client: Client, message: Message):
                     if meta.get('title') == 'Album':
                         album = meta.get('text')
 
-        await status_msg.edit_text(f"[+] Match: {artist} - {title}\n[*] Injecting metadata binary...")
+        await status_msg.edit_text(f"[+] Injecting metadata binary:\nArtist: {artist}\nTitle: {title}")
 
         try:
             audio = EasyID3(file_path)
@@ -78,19 +83,74 @@ async def process_audio(client: Client, message: Message):
             audio=new_file_path,
             title=title,
             performer=artist,
-            caption=f"**Title:** {title}\n**Artist:** {artist}\n**Album:** {album}"
+            caption=f"**Title:** {title}\n**Artist:** {artist}\n**Album:** {album if album else 'Unknown'}"
         )
         await status_msg.delete()
+
+        if os.path.exists(new_file_path):
+            os.remove(new_file_path)
 
     except FloodWait as e:
         await asyncio.sleep(e.value)
     except Exception as e:
         await status_msg.edit_text(f"[-] Fault Exception: {str(e)}")
-    finally:
         if os.path.exists(file_path):
             os.remove(file_path)
+
+@app.on_message(filters.reply & filters.text & filters.private)
+async def manual_metadata_injection(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in pending_tasks:
+        return
+
+    file_path = pending_tasks[user_id]
+    input_data = message.text.strip()
+    
+    if "-" not in input_data:
+        await message.reply_text("[-] Invalid Syntax. Strict format required: `Artist - Title`.")
+        return
+
+    artist, title = [part.strip() for part in input_data.split("-", 1)]
+    status_msg = await message.reply_text(f"[*] Executing manual injection:\nArtist: {artist}\nTitle: {title}")
+
+    try:
+        try:
+            audio = EasyID3(file_path)
+        except Exception:
+            audio = MP3(file_path)
+            if audio.tags is None:
+                audio.add_tags()
+            audio = EasyID3(file_path)
+
+        audio['title'] = title
+        audio['artist'] = artist
+        audio.save()
+
+        safe_name = f"{artist} - {title}".replace('/', '_').replace('\\', '_') + ".mp3"
+        new_file_path = os.path.join(os.path.dirname(file_path), safe_name)
+        os.rename(file_path, new_file_path)
+
+        await status_msg.edit_text("[^] Uploading modified payload...")
+        
+        await asyncio.sleep(1)
+        await message.reply_audio(
+            audio=new_file_path,
+            title=title,
+            performer=artist,
+            caption=f"**Title:** {title}\n**Artist:** {artist}\n(Manual Override)"
+        )
+        
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except Exception as e:
+        await status_msg.edit_text(f"[-] Fault Exception: {str(e)}")
+    finally:
+        del pending_tasks[user_id]
+        await status_msg.delete()
         if 'new_file_path' in locals() and os.path.exists(new_file_path):
             os.remove(new_file_path)
+        elif os.path.exists(file_path):
+            os.remove(file_path)
 
 if __name__ == "__main__":
     app.run()
