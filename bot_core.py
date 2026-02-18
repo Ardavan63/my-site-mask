@@ -67,6 +67,15 @@ def fetch_ytmusic_metadata(query: str):
     thumbnails = track.get('thumbnails', [])
     cover_url = thumbnails[-1].get('url') if thumbnails else ""
     
+    # ------------------------------------------------------------
+    # HQ Cover Resolution Patch: Overriding Google's compression
+    # ------------------------------------------------------------
+    if cover_url:
+        if "=" in cover_url and ("lh3.googleusercontent.com" in cover_url or "yt3.ggpht.com" in cover_url):
+            cover_url = cover_url.split("=")[0] + "=w1200-h1200-l90-rj"
+        elif "i.ytimg.com" in cover_url:
+            cover_url = cover_url.replace("hqdefault.jpg", "maxresdefault.jpg").replace("sddefault.jpg", "maxresdefault.jpg")
+    
     lyrics_text = ""
     if video_id:
         try:
