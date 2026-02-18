@@ -2,3 +2,4 @@ pyrogram
 tgcrypto
 shazamio
 mutagen
+ytmusicapi
