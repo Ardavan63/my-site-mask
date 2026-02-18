@@ -3,3 +3,4 @@ tgcrypto
 shazamio
 mutagen
 ytmusicapi
+aiohttp
