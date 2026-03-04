@@ -1,6 +1,2 @@
-pyrogram
-tgcrypto
-shazamio
-mutagen
-ytmusicapi
-aiohttp
+telethon
+python-bale-bot
