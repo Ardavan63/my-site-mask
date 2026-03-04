@@ -7,7 +7,7 @@ from telethon.sessions import StringSession
 import bale
 from bale import InputFile, Message
 
-# متغیرهای Railway
+# متغیرهای Railway (یا هر هاستی)
 api_id = int(os.getenv('TG_API_ID'))
 api_hash = os.getenv('TG_API_HASH')
 session_string = os.getenv('TG_SESSION')
@@ -16,7 +16,7 @@ bale_token = os.getenv('BALE_TOKEN')
 client = TelegramClient(StringSession(session_string), api_id, api_hash)
 bale_bot = bale.Bot(token=bale_token)
 
-# دیتابیس subscribers
+# دیتابیس subscribers (با check_same_thread=False برای async)
 conn = sqlite3.connect('subscribers.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS subscribers (chat_id INTEGER PRIMARY KEY)''')
@@ -34,15 +34,22 @@ def remove_sub(chat_id):
     c.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
     conn.commit()
 
-# هندلر تلگرام - فقط کانال و گروه
+# ==================== هندلر تلگرام (فیکس شده: همه پیام‌ها فوروارد می‌شن) ====================
 @client.on(events.NewMessage(incoming=True))
 async def forward_handler(event):
-    if event.is_private:
-        return
-
     msg = event.message
-    title = event.chat.title or "گروه/کانال"
-    base_caption = f"{msg.message or ''}\n\n📌 از: {title} (تلگرام)"
+
+    # عنوان پیام (برای خصوصی و عمومی جداگانه)
+    if event.is_private:
+        sender = event.sender or event.chat
+        title = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
+        title = title or sender.username or "کاربر خصوصی"
+        source = f"📨 پیام خصوصی از: {title} (تلگرام)"
+    else:
+        title = event.chat.title or "گروه/کانال"
+        source = f"📌 از: {title} (تلگرام)"
+
+    base_caption = f"{msg.message or ''}\n\n{source}"
 
     subs = get_subs()
     if not subs:
@@ -58,7 +65,8 @@ async def forward_handler(event):
             buffer = BytesIO()
             await msg.download_media(file=buffer)
             buffer.seek(0)
-            ifile = InputFile(buffer.read())
+            file_bytes = buffer.read()          # فقط یک بار بخون
+            ifile = InputFile(file_bytes)       # InputFile بایتس رو نگه می‌داره و برای همه مشترکین قابل استفاده است
 
             for uid in subs:
                 try:
@@ -72,17 +80,18 @@ async def forward_handler(event):
                         await bale_bot.send_audio(uid, ifile, caption=base_caption)
                     else:
                         await bale_bot.send_document(uid, ifile, caption=base_caption)
-                except:
-                    pass
+                except Exception as send_err:
+                    print(f"خطای ارسال به {uid}: {send_err}")
             print(f"✅ رسانه فوروارد شد به {len(subs)} نفر | از {title}")
         else:
+            # پیام متنی
             for uid in subs:
                 await bale_bot.send_message(uid, base_caption)
             print(f"✅ متن فوروارد شد به {len(subs)} نفر | از {title}")
     except Exception as e:
-        print(f"خطای فوروارد: {e}")
+        print(f"خطای کلی فوروارد: {e}")
 
-# هندلر بله (فیکس شده)
+# ==================== هندلر بله (کاملاً درست و فیکس‌شده) ====================
 @bale_bot.event
 async def on_message(message: Message):
     if not message.text:
@@ -92,24 +101,32 @@ async def on_message(message: Message):
 
     if text == "/start":
         add_sub(chat_id)
-        await message.reply("✅ ثبت شد!\nاز این به بعد همه پیام‌های کانال و گروه تلگرامت مستقیم اینجا میاد.")
+        await message.reply("✅ ثبت شد!\nاز این به بعد **همه** پیام‌های تلگرامت (حتی خصوصی) مستقیم اینجا میاد.")
     elif text == "/stop":
         remove_sub(chat_id)
         await message.reply("❌ ثبت لغو شد.")
     elif text == "/count":
         await message.reply(f"تعداد مشترکین فعال: {len(get_subs())} نفر")
     else:
-        await message.reply("دستورات:\n/start → ثبت\n/stop → لغو\n/count → تعداد مشترکین")
+        await message.reply(
+            "دستورات موجود:\n"
+            "/start → ثبت دریافت پیام\n"
+            "/stop → لغو دریافت\n"
+            "/count → تعداد مشترکین"
+        )
 
+# ==================== اجرای همزمان دو کلاینت ====================
 async def main():
-    print("🚀 فورواردر چند کاربره تلگرام → بله شروع شد")
+    print("🚀 فورواردر تلگرام → بله (همه پیام‌ها شامل خصوصی) شروع شد")
     await client.start()
-    print("✅ تلگرام متصل")
+    print("✅ تلگرام متصل شد")
     print("✅ ربات بله آماده — کاربران با /start ثبت شوند")
 
+    # gather درست و بدون کرش event loop
     await asyncio.gather(
         client.run_until_disconnected(),
-        bale_bot.run()
+        bale_bot.run(),
+        return_exceptions=True
     )
 
 if __name__ == "__main__":
