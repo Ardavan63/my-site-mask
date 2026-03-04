@@ -2,6 +2,7 @@ import os
 import asyncio
 import sqlite3
 from io import BytesIO
+import threading
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import bale
@@ -34,16 +35,15 @@ def remove_sub(chat_id):
     c.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
     conn.commit()
 
-# ==================== هندلر تلگرام (همه پیام‌ها + لاگ سنگین) ====================
+# ==================== هندلر تلگرام (همه پیام‌ها + لاگ کامل) ====================
 @client.on(events.NewMessage(incoming=True))
 async def forward_handler(event):
     msg = event.message
-    print(f"📥 پیام جدید از تلگرام دریافت شد | Chat ID: {event.chat_id} | خصوصی: {event.is_private}")
+    print(f"📥 [تلگرام] پیام جدید دریافت شد | خصوصی: {event.is_private} | ChatID: {event.chat_id}")
 
-    # عنوان هوشمند
     if event.is_private:
         sender = event.sender or event.chat
-        title = f"{sender.first_name or ''} {sender.last_name or ''}".strip() or sender.username or "کاربر ناشناس"
+        title = f"{sender.first_name or ''} {sender.last_name or ''}".strip() or sender.username or "ناشناس"
         source = f"📨 پیام خصوصی از: {title}"
     else:
         title = event.chat.title or "گروه/کانال"
@@ -55,7 +55,7 @@ async def forward_handler(event):
     print(f"👥 تعداد مشترکین: {len(subs)}")
 
     if not subs:
-        print("⚠️ هیچ مشترکی وجود ندارد")
+        print("⚠️ هیچ مشترکی نیست")
         return
 
     try:
@@ -85,28 +85,25 @@ async def forward_handler(event):
                     else:
                         await bale_bot.send_document(uid, ifile, caption=base_caption)
                     print(f"✅ رسانه به {uid} ارسال شد")
-                except Exception as e:
-                    print(f"❌ خطا ارسال به {uid}: {e}")
+                except Exception as send_err:
+                    print(f"❌ خطا ارسال رسانه به {uid}: {send_err}")
+            print(f"✅ رسانه فوروارد شد به {len(subs)} نفر")
         else:
             for uid in subs:
                 await bale_bot.send_message(uid, base_caption)
                 print(f"✅ متن به {uid} ارسال شد")
+            print(f"✅ متن فوروارد شد به {len(subs)} نفر")
     except Exception as e:
         print(f"❌ خطای کلی فوروارد: {e}")
 
-# ==================== هندلر بله (با لاگ + on_ready + on_before_ready) ====================
-@bale_bot.event
-async def on_before_ready():
-    await bale_bot.delete_webhook()
-    print("✅ Webhook پاک شد — حالا polling فعال است")
-
+# ==================== هندلرهای بله ====================
 @bale_bot.event
 async def on_ready():
-    print(f"✅ ربات بله کاملاً آنلاین شد | Username: {bale_bot.user.username if bale_bot.user else 'N/A'}")
+    print("✅ ربات بله کاملاً آنلاین شد | حالا /start بزنید")
 
 @bale_bot.event
 async def on_message(message: Message):
-    print(f"📨 پیام از بله دریافت شد | Chat ID: {message.chat.id} | متن: {message.text}")
+    print(f"📨 [بله] پیام دریافت شد | ChatID: {message.chat.id} | متن: {message.text}")
     if not message.text:
         return
     text = message.text.strip().lower()
@@ -126,18 +123,30 @@ async def on_message(message: Message):
     else:
         await message.reply("دستورات:\n/start → ثبت\n/stop → لغو\n/count → تعداد")
 
-# ==================== اجرای همزمان (درست و بدون ترد) ====================
+# ==================== اجرای bale در ترد جدا (فیکس اصلی) ====================
+def bale_runner():
+    print("🚀 شروع polling ربات بله...")
+    bale_bot.run()
+
+# ==================== main ====================
 async def main():
     print("🚀 فورواردر تلگرام → بله (نسخه نهایی) شروع شد")
-
     await client.start()
     print("✅ تلگرام متصل شد")
 
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        bale_bot.run(),          # ← این خط کلیدی بود! حالا await می‌شه
-        return_exceptions=True
-    )
+    # پاک کردن webhook
+    try:
+        await bale_bot.delete_webhook()
+        print("✅ Webhook پاک شد — polling فعال")
+    except:
+        print("Webhook قبلاً پاک شده")
+
+    # bale را در ترد جدا اجرا کن
+    thread = threading.Thread(target=bale_runner, daemon=True)
+    thread.start()
+    print("✅ ترد ربات بله شروع شد")
+
+    await client.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
