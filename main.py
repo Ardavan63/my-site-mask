@@ -16,7 +16,7 @@ bale_token = os.getenv('BALE_TOKEN')
 client = TelegramClient(StringSession(session_string), api_id, api_hash)
 bale_bot = bale.Bot(token=bale_token)
 
-# دیتابیس subscribers (پایدار)
+# دیتابیس subscribers
 conn = sqlite3.connect('subscribers.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS subscribers (chat_id INTEGER PRIMARY KEY)''')
@@ -34,14 +34,14 @@ def remove_sub(chat_id):
     c.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
     conn.commit()
 
-# هندلر تلگرام - فقط پیام‌های کانال و گروه (چت خصوصی نادیده گرفته می‌شه)
+# هندلر تلگرام - فقط کانال و گروه
 @client.on(events.NewMessage(incoming=True))
 async def forward_handler(event):
-    if event.is_private:  # فقط کانال و گروه
+    if event.is_private:
         return
 
     msg = event.message
-    title = event.chat.title or "گروه/کانال ناشناس"
+    title = event.chat.title or "گروه/کانال"
     base_caption = f"{msg.message or ''}\n\n📌 از: {title} (تلگرام)"
 
     subs = get_subs()
@@ -50,7 +50,6 @@ async def forward_handler(event):
 
     try:
         if msg.media:
-            # محدودیت ۱۵ مگ برای جلوگیری از کرش رم
             if msg.file and msg.file.size > 15 * 1024 * 1024:
                 for uid in subs:
                     await bale_bot.send_message(uid, f"⚠️ فایل بزرگ (>۱۵ مگ) رد شد\n{base_caption}")
@@ -73,20 +72,19 @@ async def forward_handler(event):
                         await bale_bot.send_audio(uid, ifile, caption=base_caption)
                     else:
                         await bale_bot.send_document(uid, ifile, caption=base_caption)
-                except Exception as e:
-                    print(f"ارسال به {uid} شکست: {e}")
+                except:
+                    pass
             print(f"✅ رسانه فوروارد شد به {len(subs)} نفر | از {title}")
         else:
-            # پیام متنی
             for uid in subs:
                 await bale_bot.send_message(uid, base_caption)
             print(f"✅ متن فوروارد شد به {len(subs)} نفر | از {title}")
     except Exception as e:
-        print(f"خطای کلی فوروارد: {e}")
+        print(f"خطای فوروارد: {e}")
 
-# هندلرهای بله
-@bale_bot.on_message()
-async def bale_handler(message: Message):
+# هندلر بله (فیکس شده)
+@bale_bot.event
+async def on_message(message: Message):
     if not message.text:
         return
     text = message.text.strip().lower()
@@ -101,15 +99,14 @@ async def bale_handler(message: Message):
     elif text == "/count":
         await message.reply(f"تعداد مشترکین فعال: {len(get_subs())} نفر")
     else:
-        await message.reply("دستورات: /start (ثبت) | /stop (لغو) | /count (تعداد)")
+        await message.reply("دستورات:\n/start → ثبت\n/stop → لغو\n/count → تعداد مشترکین")
 
 async def main():
-    print("🚀 شروع فورواردر چند کاربره تلگرام → بله")
+    print("🚀 فورواردر چند کاربره تلگرام → بله شروع شد")
     await client.start()
-    print("✅ تلگرام متصل شد")
-    print("✅ ربات بله آماده‌ست — کاربران با /start ثبت شوند")
+    print("✅ تلگرام متصل")
+    print("✅ ربات بله آماده — کاربران با /start ثبت شوند")
 
-    # اجرای همزمان هر دو کلاینت (بدون قطع شدن هیچ‌کدوم)
     await asyncio.gather(
         client.run_until_disconnected(),
         bale_bot.run()
